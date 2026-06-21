@@ -8,7 +8,6 @@ import * as readline from 'readline';
 config({ path: path.join(process.cwd(), '.env') });
 
 interface TextMessage {
-  type?: 'message';
   role: 'user' | 'assistant' | 'system';
   content: string | { type: 'input_text'; text: string }[];
 }
@@ -114,7 +113,7 @@ class ChatSession {
   private apiKey: string;
   private logDir: string;
   private turnCount: number = 0;
-  private turnRequests: any[] = [];
+  private requestCount: number = 0;
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
@@ -127,7 +126,7 @@ class ChatSession {
   async sendMessage(input: string): Promise<void> {
     this.input.push({ role: 'user', content: [{ type: 'input_text', text: input }] });
     this.turnCount++;
-    this.turnRequests = [];
+    this.requestCount = 0;
 
     const maxIterations = 10;
     let iteration = 0;
@@ -145,9 +144,11 @@ class ChatSession {
           input: this.input,
           tools: tools,
           stream: true,
+          max_output_tokens: 4096,
         };
 
-        const requestIndex = this.turnRequests.length + 1;
+        this.requestCount++;
+        const requestIndex = this.requestCount;
         process.stderr.write(`\x1b[2m[request #${requestIndex}]\x1b[0m\n`);
 
         const logEntry: any = {
@@ -176,22 +177,16 @@ class ChatSession {
             const errorBody = await response.text();
             logEntry.response.body = errorBody;
             logEntry.error = `API request failed: ${response.status} ${response.statusText}`;
-            this.turnRequests.push(logEntry);
-            this.saveRequestLog(logEntry);
-            this.saveLog(`API request failed: ${response.status} ${response.statusText}\n${errorBody}`);
             throw new Error(`API request failed: ${response.status} ${response.statusText}\n${errorBody}`);
           }
 
           result = await this.handleStream(response);
           logEntry.response.body = result.responseBody;
-          this.turnRequests.push(logEntry);
           this.saveRequestLog(logEntry);
         } catch (fetchError) {
           logEntry.error = fetchError instanceof Error ? fetchError.message : String(fetchError);
           logEntry.errorStack = fetchError instanceof Error ? fetchError.stack : undefined;
-          this.turnRequests.push(logEntry);
           this.saveRequestLog(logEntry);
-          this.saveLog(logEntry.error);
           throw fetchError;
         }
 
@@ -336,12 +331,12 @@ class ChatSession {
   }
 
   private saveLog(error?: string): void {
-    process.stderr.write(`\x1b[2m[saveLog] turn=${this.turnCount} requests=${this.turnRequests.length}\x1b[0m\n`);
+    process.stderr.write(`\x1b[2m[saveLog] turn=${this.turnCount} requests=${this.requestCount}\x1b[0m\n`);
     const filename = path.join(this.logDir, `turn-${this.turnCount}.json`);
     const logData: any = {
       turn: this.turnCount,
       timestamp: new Date().toISOString(),
-      requestCount: this.turnRequests.length,
+      requestCount: this.requestCount,
       input: this.input,
     };
     if (error) {
