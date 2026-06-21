@@ -54,6 +54,19 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
 
+  courses/04-tools:
+    dependencies:
+      dotenv:
+        specifier: ^16.0.0
+        version: 16.6.1
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+
 packages:
 
   '@esbuild/aix-ppc64@0.28.1':

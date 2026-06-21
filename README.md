@@ -70,6 +70,7 @@ tcode/
 │   ├── 01-intro/          # 第一课：LLM API 调用
 │   ├── 02-streaming/      # 第二课：流式输出
 │   ├── 03-multi-turn/     # 第三课：多轮对话
+│   ├── 04-tools/          # 第四课：工具调用
 │   └── ...
 ├── package.json
 ├── tsconfig.json

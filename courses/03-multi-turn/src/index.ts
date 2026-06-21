@@ -7,10 +7,13 @@ import * as readline from 'readline';
 
 config({ path: path.join(process.cwd(), '.env') });
 
-interface Message {
-  role: 'user' | 'assistant';
-  content: string;
+interface TextMessage {
+  type?: 'message';
+  role: 'user' | 'assistant' | 'system';
+  content: string | { type: 'input_text'; text: string }[];
 }
+
+type InputItem = TextMessage;
 
 interface StreamEvent {
   type: string;
@@ -26,10 +29,11 @@ interface StreamEvent {
 }
 
 class ChatSession {
-  private history: Message[] = [];
+  private input: InputItem[] = [];
   private apiKey: string;
   private logDir: string;
   private turnCount: number = 0;
+  private lastRequest: any = null;
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
@@ -40,35 +44,59 @@ class ChatSession {
   }
 
   async sendMessage(input: string): Promise<void> {
-    this.history.push({ role: 'user', content: input });
+    this.input.push({ role: 'user', content: [{ type: 'input_text', text: input }] });
+    this.turnCount++;
 
-    const response = await fetch('https://apihub.agnes-ai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'agnes-2.0-flash',
-        input: this.formatInput(),
-        stream: true,
-      }),
-    });
+    const url = 'https://apihub.agnes-ai.com/v1/responses';
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${this.apiKey}`,
+    };
+    const body: Record<string, any> = {
+      model: 'agnes-2.0-flash',
+      input: this.input,
+      stream: true,
+    };
 
-    if (!response.ok) {
-      throw new Error(`API request failed: ${response.statusText}`);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      const responseHeaders: Record<string, string> = {};
+      response.headers.forEach((value, key) => {
+        responseHeaders[key] = value;
+      });
+
+      const logEntry: any = {
+        timestamp: new Date().toISOString(),
+        request: { url, method: 'POST', headers, body },
+        response: { status: response.status, statusText: response.statusText, headers: responseHeaders },
+      };
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        logEntry.response.body = errorBody;
+        logEntry.error = `API request failed: ${response.status} ${response.statusText}`;
+        this.lastRequest = logEntry;
+        this.saveLog(`API request failed: ${response.status} ${response.statusText}\n${errorBody}`);
+        throw new Error(`API request failed: ${response.status} ${response.statusText}\n${errorBody}`);
+      }
+
+      const result = await this.handleStream(response);
+      logEntry.response.body = result.responseBody;
+      this.lastRequest = logEntry;
+      this.saveLog();
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.saveLog(errorMessage);
+      throw error;
     }
-
-    await this.handleStream(response);
   }
 
-  private formatInput(): string {
-    return this.history
-      .map((msg) => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
-      .join('\n\n');
-  }
-
-  private async handleStream(response: Response): Promise<void> {
+  private async handleStream(response: Response): Promise<{ responseBody: any[] }> {
     const reader = response.body?.getReader();
     if (!reader) {
       throw new Error('No response body');
@@ -78,6 +106,7 @@ class ChatSession {
     let buffer = '';
     let currentItemType = 'message';
     let assistantResponse = '';
+    const responseBody: any[] = [];
 
     while (true) {
       const { done, value } = await reader.read();
@@ -94,7 +123,8 @@ class ChatSession {
 
           try {
             const event: StreamEvent = JSON.parse(data);
-            
+            responseBody.push(event);
+
             if (event.type === 'response.output_item.added' && event.item) {
               currentItemType = event.item.type;
             }
@@ -117,14 +147,23 @@ class ChatSession {
     }
 
     process.stdout.write('\n');
-    this.history.push({ role: 'assistant', content: assistantResponse });
-    this.saveLog();
+    this.input.push({ role: 'assistant', content: assistantResponse });
+
+    return { responseBody };
   }
 
-  private saveLog(): void {
-    this.turnCount++;
+  private saveLog(error?: string): void {
+    process.stderr.write(`\x1b[2m[saveLog] turn=${this.turnCount}\x1b[0m\n`);
     const filename = path.join(this.logDir, `turn-${this.turnCount}.json`);
-    fs.writeFileSync(filename, JSON.stringify(this.history, null, 2));
+    const logData: any = {
+      turn: this.turnCount,
+      ...this.lastRequest,
+      input: this.input,
+    };
+    if (error) {
+      logData.error = error;
+    }
+    fs.writeFileSync(filename, JSON.stringify(logData, null, 2));
   }
 }
 
