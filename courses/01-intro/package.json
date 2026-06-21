@@ -1,0 +1,21 @@
+{
+  "name": "tcode",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "tcode": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "install:global": "tsc && npm install -g --force"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.0.0"
+  }
+}

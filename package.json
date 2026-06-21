@@ -1,0 +1,14 @@
+{
+  "name": "ts-course-repo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "course:dev": "pnpm --filter",
+    "build:all": "pnpm -r build",
+    "course:watch": "pnpm --filter"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
