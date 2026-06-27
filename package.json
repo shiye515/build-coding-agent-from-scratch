@@ -5,9 +5,13 @@
   "scripts": {
     "course:dev": "pnpm --filter",
     "build:all": "pnpm -r build",
-    "course:watch": "pnpm --filter"
+    "course:watch": "pnpm --filter",
+    "test": "pnpm -r test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "devDependencies": {
+    "prettier": "^3.5.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   }

@@ -1,20 +1,59 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+# 项目上下文
+# AI 在生成 proposal/design/specs/tasks 时会参考此上下文。
+context: |
+  项目名称: build-coding-agent-from-scratch
+  项目类型: TypeScript 教学课程仓库（monorepo，pnpm workspace）
+  目标: 从零构建 coding agent 的渐进式教程
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  技术栈:
+  - 语言: TypeScript (Node.js)
+  - 包管理: pnpm (workspace)
+  - 运行时: tsx
+  - API: OpenRouter Anthropic Messages API 格式
+
+  课程结构:
+  - courses/01-intro: 基础 API 调用（非流式）
+  - courses/02-streaming: SSE 流式响应
+  - courses/03-multi-turn: 多轮对话 + 历史管理
+  - courses/04-tools: 工具调用 + agentic loop
+
+  配置管理:
+  - 根目录 .env: OPENROUTER_API_KEY
+  - 根目录 settings.json: BASE_URL, MODEL
+  - 各教程从根目录读取配置
+
+  编码规范:
+  - 不添加不必要的注释
+  - 最小化代码改动
+  - 遵循现有代码风格
+  - 代码格式化遵循项目根目录 .prettierrc 配置:
+    - 使用分号 (semi: true)
+    - 使用单引号 (singleQuote: true)
+    - 尾随逗号 (trailingComma: "all")
+    - 行宽 100 字符 (printWidth: 100)
+    - 2 空格缩进 (tabWidth: 2)
+    - 箭头函数始终加括号 (arrowParens: "always")
+
+# 各 artifact 的自定义规则
+rules:
+  proposal:
+    - 使用简体中文撰写
+    - 控制在 500 字以内
+    - 必须包含"非目标"部分
+    - 明确标注 BREAKING 变更
+  design:
+    - 使用简体中文撰写
+    - 重点说明技术决策和理由
+    - 包含风险和权衡分析
+  specs:
+    - 使用简体中文撰写需求描述
+    - 场景使用 WHEN/THEN 格式
+    - 每个需求至少一个场景
+    - 使用 SHALL/MUST 表达规范性要求
+  tasks:
+    - 使用简体中文描述任务
+    - 每个任务可在一个会话内完成
+    - 按依赖顺序排列
+    - 任务应可验证

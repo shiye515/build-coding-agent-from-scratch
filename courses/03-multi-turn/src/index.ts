@@ -2,30 +2,74 @@
 
 import { config } from 'dotenv';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import * as readline from 'readline';
+import { fileURLToPath } from 'url';
 
-config({ path: path.join(process.cwd(), '.env') });
+const COURSE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const REPO_ROOT = path.join(COURSE_ROOT, '../..');
+const CONFIG_DIR = fs.existsSync(path.join(REPO_ROOT, 'settings.json'))
+  ? REPO_ROOT
+  : path.join(os.homedir(), '.tcode');
+const settingsPath = path.join(CONFIG_DIR, 'settings.json');
 
-interface TextMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string | { type: 'input_text'; text: string }[];
+if (!fs.existsSync(CONFIG_DIR)) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+}
+
+if (!fs.existsSync(settingsPath)) {
+  fs.writeFileSync(
+    settingsPath,
+    JSON.stringify(
+      {
+        env: {
+          BASE_URL: 'https://api.deepseek.com/anthropic',
+          MODEL: 'deepseek-v4-flash',
+          CONTEXT_WINDOW: 100000,
+        },
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+}
+
+config({ path: path.join(CONFIG_DIR, '.env') });
+
+const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+const BASE_URL = settings.env.BASE_URL;
+const MODEL = settings.env.MODEL;
+const API_KEY = process.env.API_KEY || settings.env.API_KEY || '';
+
+interface Message {
+  role: 'user' | 'assistant';
+  content: string;
 }
 
 interface StreamEvent {
   type: string;
-  delta?: string;
-  item?: {
+  index?: number;
+  delta?: {
     type: string;
-    content?: {
-      type: string;
-      text?: string;
-    }[];
+    text?: string;
+    thinking?: string;
+  };
+  content_block?: {
+    type: string;
+    text?: string;
+    thinking?: string;
+  };
+  message?: {
+    stop_reason?: string;
+  };
+  usage?: {
+    output_tokens?: number;
   };
 }
 
-class ChatSession {
-  private input: TextMessage[] = [];
+export class ChatSession {
+  private messages: Message[] = [];
   private apiKey: string;
   private logDir: string;
   private turnCount: number = 0;
@@ -40,22 +84,19 @@ class ChatSession {
   }
 
   async sendMessage(input: string): Promise<void> {
-    this.input.push({
-      role: 'user',
-      content: [{ type: 'input_text', text: input }],
-    });
+    this.messages.push({ role: 'user', content: input });
     this.turnCount++;
 
-    const url = 'https://apihub.agnes-ai.com/v1/responses';
+    const url = `${BASE_URL}/messages`;
     const headers = {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.apiKey}`,
+      'x-api-key': this.apiKey,
     };
     const body: Record<string, any> = {
-      model: 'agnes-2.0-flash',
-      input: this.input,
+      model: MODEL,
+      max_tokens: 4096,
       stream: true,
-      max_output_tokens: 4096,
+      messages: this.messages,
     };
 
     try {
@@ -85,9 +126,7 @@ class ChatSession {
         logEntry.response.body = errorBody;
         logEntry.error = `API request failed: ${response.status} ${response.statusText}`;
         this.lastRequest = logEntry;
-        this.saveLog(
-          `API request failed: ${response.status} ${response.statusText}\n${errorBody}`,
-        );
+        this.saveLog(`API request failed: ${response.status} ${response.statusText}\n${errorBody}`);
         throw new Error(
           `API request failed: ${response.status} ${response.statusText}\n${errorBody}`,
         );
@@ -98,16 +137,13 @@ class ChatSession {
       this.lastRequest = logEntry;
       this.saveLog();
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       this.saveLog(errorMessage);
       throw error;
     }
   }
 
-  private async handleStream(
-    response: Response,
-  ): Promise<{ responseBody: any[] }> {
+  private async handleStream(response: Response): Promise<{ responseBody: any[] }> {
     const reader = response.body?.getReader();
     if (!reader) {
       throw new Error('No response body');
@@ -115,7 +151,7 @@ class ChatSession {
 
     const decoder = new TextDecoder();
     let buffer = '';
-    let currentItemType = 'message';
+    let currentBlockType = '';
     let assistantResponse = '';
     const responseBody: any[] = [];
 
@@ -136,26 +172,19 @@ class ChatSession {
             const event: StreamEvent = JSON.parse(data);
             responseBody.push(event);
 
-            if (event.type === 'response.output_item.added' && event.item) {
-              currentItemType = event.item.type;
+            if (event.type === 'content_block_start' && event.content_block) {
+              currentBlockType = event.content_block.type;
+              if (currentBlockType === 'thinking') {
+                process.stderr.write('\x1b[2m[thinking]\x1b[0m ');
+              }
             }
 
-            if (
-              event.type === 'response.output_item.added' &&
-              event.item?.type === 'reasoning'
-            ) {
-              process.stderr.write('\x1b[2m[thinking]\x1b[0m ');
-            }
-
-            if (event.delta) {
-              if (
-                currentItemType === 'reasoning' ||
-                event.type === 'response.reasoning_text.delta'
-              ) {
-                process.stderr.write('\x1b[2m' + event.delta + '\x1b[0m');
-              } else if (event.type === 'response.output_text.delta') {
-                process.stdout.write(event.delta);
-                assistantResponse += event.delta;
+            if (event.type === 'content_block_delta' && event.delta) {
+              if (event.delta.type === 'thinking_delta' && event.delta.thinking) {
+                process.stderr.write('\x1b[2m' + event.delta.thinking + '\x1b[0m');
+              } else if (event.delta.type === 'text_delta' && event.delta.text) {
+                process.stdout.write(event.delta.text);
+                assistantResponse += event.delta.text;
               }
             }
           } catch {}
@@ -164,7 +193,7 @@ class ChatSession {
     }
 
     process.stdout.write('\n');
-    this.input.push({ role: 'assistant', content: assistantResponse });
+    this.messages.push({ role: 'assistant', content: assistantResponse });
 
     return { responseBody };
   }
@@ -175,7 +204,7 @@ class ChatSession {
     const logData: any = {
       turn: this.turnCount,
       ...this.lastRequest,
-      input: this.input,
+      messages: this.messages,
     };
     if (error) {
       logData.error = error;
@@ -184,32 +213,36 @@ class ChatSession {
   }
 }
 
-async function main() {
-  const apiKey = process.env.AGNES_APIKEY;
-  if (!apiKey) {
-    console.error('AGNES_APIKEY environment variable is not set');
+export async function main() {
+  if (!API_KEY) {
+    console.error('API_KEY is not configured (settings.json or .env)');
     process.exit(1);
   }
 
-  const session = new ChatSession(apiKey);
+  const session = new ChatSession(API_KEY);
 
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
   });
+  let isClosed = false;
+  rl.on('close', () => {
+    isClosed = true;
+  });
 
   console.log('Multi-turn Chat (type "exit" to quit)\n');
 
   const prompt = (): void => {
+    if (isClosed) {
+      return;
+    }
+
     rl.question('You: ', async (input) => {
       const trimmed = input.trim();
-      if (
-        trimmed.toLowerCase() === 'exit' ||
-        trimmed.toLowerCase() === 'quit'
-      ) {
+      if (trimmed.toLowerCase() === 'exit' || trimmed.toLowerCase() === 'quit') {
         console.log('Bye!');
         rl.close();
-        process.exit(0);
+        return;
       }
 
       if (!trimmed) {
@@ -225,11 +258,19 @@ async function main() {
         console.error('Error:', error instanceof Error ? error.message : error);
       }
 
-      prompt();
+      if (!isClosed) {
+        prompt();
+      }
     });
   };
 
   prompt();
 }
 
-main();
+const isMain = process.argv[1]
+  ? fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
+  : false;
+
+if (isMain) {
+  main();
+}

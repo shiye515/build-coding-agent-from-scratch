@@ -1,14 +1,14 @@
 # tcode: 工具调用
 
-本课程演示如何使用 TypeScript 实现 LLM 工具调用（Tool Use），支持文件读写操作。
+本课程演示如何使用 TypeScript 实现 LLM 工具调用（通过 DeepSeek 提供的 Anthropic 兼容 API），支持文件读写操作。
 
 ## 前置条件
 
-复制 `.env.example` 为 `.env` 并填入你的 API Key:
+在仓库根目录配置 API Key：
 
 ```bash
-cp .env.example .env
-# 编辑 .env 文件，填入 AGNES_APIKEY
+# 方式 1（推荐）：编辑根目录 settings.json，填入 env.API_KEY
+# 方式 2：在根目录 .env 中设置 API_KEY
 ```
 
 ## 运行
@@ -20,7 +20,8 @@ pnpm dev
 
 ## 功能特点
 
-- 多轮对话 + 工具调用
+- 多轮对话 + 工具调用（`tool_use` / `tool_result`）
+- 工具定义在 `src/tools.ts` 中，使用 Anthropic 格式（`type: "custom"`, `input_schema`）
 - 内置工具：
   - `read_file`: 读取文件内容
   - `write_file`: 写入文件内容

@@ -1,0 +1,7 @@
+{
+  "env": {
+    "BASE_URL": "https://api.deepseek.com/anthropic",
+    "MODEL": "deepseek-v4-flash",
+    "CONTEXT_WINDOW": 1000000
+  }
+}

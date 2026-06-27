@@ -1,39 +1,83 @@
 #!/usr/bin/env node
 
 import { config } from 'dotenv';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
-config({ path: path.join(process.cwd(), '.env') });
+const COURSE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const REPO_ROOT = path.join(COURSE_ROOT, '../..');
+const CONFIG_DIR = fs.existsSync(path.join(REPO_ROOT, 'settings.json'))
+  ? REPO_ROOT
+  : path.join(os.homedir(), '.tcode');
+const settingsPath = path.join(CONFIG_DIR, 'settings.json');
+
+if (!fs.existsSync(CONFIG_DIR)) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+}
+
+if (!fs.existsSync(settingsPath)) {
+  fs.writeFileSync(
+    settingsPath,
+    JSON.stringify(
+      {
+        env: {
+          BASE_URL: 'https://api.deepseek.com/anthropic',
+          MODEL: 'deepseek-v4-flash',
+          CONTEXT_WINDOW: 100000,
+        },
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+}
+
+config({ path: path.join(CONFIG_DIR, '.env') });
+
+const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+const BASE_URL = settings.env.BASE_URL;
+const MODEL = settings.env.MODEL;
+const API_KEY = process.env.API_KEY || settings.env.API_KEY || '';
 
 interface StreamEvent {
   type: string;
-  delta?: string;
-  item?: {
+  index?: number;
+  delta?: {
     type: string;
-    content?: {
-      type: string;
-      text?: string;
-    }[];
+    text?: string;
+    thinking?: string;
   };
-  item_id?: string;
+  content_block?: {
+    type: string;
+    text?: string;
+    thinking?: string;
+  };
+  message?: {
+    stop_reason?: string;
+  };
+  usage?: {
+    output_tokens?: number;
+  };
 }
 
-async function callLLMStream(prompt: string): Promise<void> {
-  const apiKey = process.env.AGNES_APIKEY;
-  if (!apiKey) {
-    throw new Error('AGNES_APIKEY environment variable is not set');
+export async function callLLMStream(prompt: string): Promise<void> {
+  if (!API_KEY) {
+    throw new Error('API_KEY is not configured (settings.json or .env)');
   }
 
-  const response = await fetch('https://apihub.agnes-ai.com/v1/responses', {
+  const response = await fetch(`${BASE_URL}/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
+      'x-api-key': API_KEY,
     },
     body: JSON.stringify({
-      model: 'agnes-2.0-flash',
-      input: prompt,
+      model: MODEL,
+      max_tokens: 1024,
       stream: true,
+      messages: [{ role: 'user', content: prompt }],
     }),
   });
 
@@ -48,7 +92,6 @@ async function callLLMStream(prompt: string): Promise<void> {
 
   const decoder = new TextDecoder();
   let buffer = '';
-  let currentItemType = 'message';
 
   while (true) {
     const { done, value } = await reader.read();
@@ -65,44 +108,40 @@ async function callLLMStream(prompt: string): Promise<void> {
 
         try {
           const event: StreamEvent = JSON.parse(data);
-          handleEvent(event, currentItemType);
-          if (event.type === 'response.output_item.added' && event.item) {
-            currentItemType = event.item.type;
-          }
+          handleEvent(event);
         } catch {}
       }
     }
   }
 }
 
-function handleEvent(event: StreamEvent, currentItemType: string): void {
+export function handleEvent(event: StreamEvent): void {
   if (process.env.DEBUG) {
     process.stderr.write(JSON.stringify(event) + '\n');
   }
 
   switch (event.type) {
-    case 'response.output_item.added':
-      if (event.item?.type === 'reasoning') {
+    case 'content_block_start':
+      if (event.content_block?.type === 'thinking') {
         process.stderr.write('\x1b[2m[thinking]\x1b[0m ');
       }
       break;
-    case 'response.reasoning_text.delta':
-    case 'response.output_text.delta':
+    case 'content_block_delta':
       if (event.delta) {
-        if (currentItemType === 'reasoning' || event.type === 'response.reasoning_text.delta') {
-          process.stderr.write('\x1b[2m' + event.delta + '\x1b[0m');
-        } else {
-          process.stdout.write(event.delta);
+        if (event.delta.type === 'thinking_delta' && event.delta.thinking) {
+          process.stderr.write('\x1b[2m' + event.delta.thinking + '\x1b[0m');
+        } else if (event.delta.type === 'text_delta' && event.delta.text) {
+          process.stdout.write(event.delta.text);
         }
       }
       break;
-    case 'response.completed':
+    case 'message_stop':
       process.stdout.write('\n');
       break;
   }
 }
 
-async function main() {
+export async function main() {
   const prompt = process.argv[2];
   if (!prompt) {
     console.error('Usage: pnpm dev <prompt>');
@@ -117,4 +156,10 @@ async function main() {
   }
 }
 
-main();
+const isMain = process.argv[1]
+  ? fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
+  : false;
+
+if (isMain) {
+  main();
+}

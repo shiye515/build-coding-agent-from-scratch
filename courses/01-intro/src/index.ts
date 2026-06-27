@@ -1,36 +1,73 @@
 #!/usr/bin/env node
 
 import { config } from 'dotenv';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
-config({ path: path.join(process.cwd(), '.env') });
+const COURSE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const REPO_ROOT = path.join(COURSE_ROOT, '../..');
+const CONFIG_DIR = fs.existsSync(path.join(REPO_ROOT, 'settings.json'))
+  ? REPO_ROOT
+  : path.join(os.homedir(), '.tcode');
+const settingsPath = path.join(CONFIG_DIR, 'settings.json');
 
-interface ResponsesAPIResult {
-  id: string;
-  output: {
-    type: string;
-    content?: {
-      type: string;
-      text?: string;
-    }[];
-  }[];
+if (!fs.existsSync(CONFIG_DIR)) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
 }
 
-async function callLLM(prompt: string): Promise<string> {
-  const apiKey = process.env.AGNES_APIKEY;
-  if (!apiKey) {
-    throw new Error('AGNES_APIKEY environment variable is not set');
+if (!fs.existsSync(settingsPath)) {
+  fs.writeFileSync(
+    settingsPath,
+    JSON.stringify(
+      {
+        env: {
+          BASE_URL: 'https://api.deepseek.com/anthropic',
+          MODEL: 'deepseek-v4-flash',
+          CONTEXT_WINDOW: 100000,
+        },
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+}
+
+config({ path: path.join(CONFIG_DIR, '.env') });
+
+const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+const BASE_URL = settings.env.BASE_URL;
+const MODEL = settings.env.MODEL;
+const API_KEY = process.env.API_KEY || settings.env.API_KEY || '';
+
+interface MessagesResult {
+  id: string;
+  model: string;
+  role: string;
+  content: { type: string; text?: string }[];
+  stop_reason: string;
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+  };
+}
+
+export async function callLLM(prompt: string): Promise<string> {
+  if (!API_KEY) {
+    throw new Error('API_KEY is not configured (settings.json or .env)');
   }
 
-  const response = await fetch('https://apihub.agnes-ai.com/v1/responses', {
+  const response = await fetch(`${BASE_URL}/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
+      'x-api-key': API_KEY,
     },
     body: JSON.stringify({
-      model: 'agnes-2.0-flash',
-      input: prompt,
+      model: MODEL,
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: prompt }],
     }),
   });
 
@@ -38,12 +75,12 @@ async function callLLM(prompt: string): Promise<string> {
     throw new Error(`API request failed: ${response.statusText}`);
   }
 
-  const data: ResponsesAPIResult = await response.json();
+  const data: MessagesResult = await response.json();
 
   return JSON.stringify(data, null, 2);
 }
 
-async function main() {
+export async function main() {
   const prompt = process.argv[2];
   if (!prompt) {
     console.error('Usage: pnpm dev <prompt>');
@@ -59,4 +96,10 @@ async function main() {
   }
 }
 
-main();
+const isMain = process.argv[1]
+  ? fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
+  : false;
+
+if (isMain) {
+  main();
+}

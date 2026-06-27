@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc",
-    "install:global": "tsc && npm install -g --force"
+    "test": "node --import tsx --test test/*.test.ts",
+    "install:global": "tsc && pnpm install -g --force ."
   },
   "dependencies": {
     "dotenv": "^16.0.0"

@@ -1,0 +1,13 @@
+node_modules
+*.lock
+pnpm-lock.yaml
+dist
+log
+.env
+.env.*
+.claude
+.codex
+openspec
+AGENTS.md
+CLAUDE.md
+README.md

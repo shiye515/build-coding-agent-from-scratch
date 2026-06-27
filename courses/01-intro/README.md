@@ -1,14 +1,14 @@
 # tcode: LLM API 调用
 
-本课程演示如何使用 TypeScript 调用 LLM API。
+本课程演示如何使用 TypeScript 调用 LLM API（通过 DeepSeek 提供的 Anthropic 兼容 API）。
 
 ## 前置条件
 
-复制 `.env.example` 为 `.env` 并填入你的 API Key:
+在仓库根目录配置 API Key：
 
 ```bash
-cp .env.example .env
-# 编辑 .env 文件，填入 AGNES_APIKEY
+# 方式 1（推荐）：编辑根目录 settings.json，填入 env.API_KEY
+# 方式 2：在根目录 .env 中设置 API_KEY
 ```
 
 ## 运行

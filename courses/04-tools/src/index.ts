@@ -2,114 +2,101 @@
 
 import { config } from 'dotenv';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import * as readline from 'readline';
+import { fileURLToPath } from 'url';
+import { tools, executeTool } from './tools.js';
 
-config({ path: path.join(process.cwd(), '.env') });
+const COURSE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const REPO_ROOT = path.join(COURSE_ROOT, '../..');
+const CONFIG_DIR = fs.existsSync(path.join(REPO_ROOT, 'settings.json'))
+  ? REPO_ROOT
+  : path.join(os.homedir(), '.tcode');
+const settingsPath = path.join(CONFIG_DIR, 'settings.json');
 
-interface TextMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string | { type: 'input_text'; text: string }[];
+if (!fs.existsSync(CONFIG_DIR)) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
 }
 
-interface FunctionCall {
-  type: 'function_call';
+if (!fs.existsSync(settingsPath)) {
+  fs.writeFileSync(
+    settingsPath,
+    JSON.stringify(
+      {
+        env: {
+          BASE_URL: 'https://api.deepseek.com/anthropic',
+          MODEL: 'deepseek-v4-flash',
+          CONTEXT_WINDOW: 100000,
+        },
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+}
+
+config({ path: path.join(CONFIG_DIR, '.env') });
+
+const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+const BASE_URL = settings.env.BASE_URL;
+const MODEL = settings.env.MODEL;
+const API_KEY = process.env.API_KEY || settings.env.API_KEY || '';
+
+interface ToolUse {
+  type: 'tool_use';
   id: string;
-  call_id: string;
   name: string;
-  arguments: string;
+  input: Record<string, any>;
 }
 
-interface FunctionCallOutput {
-  type: 'function_call_output';
-  call_id: string;
-  output: string;
+interface TextBlock {
+  type: 'text';
+  text: string;
 }
 
-type InputItem = TextMessage | FunctionCall | FunctionCallOutput;
+interface ThinkingBlock {
+  type: 'thinking';
+  thinking: string;
+}
 
-interface Tool {
-  type: 'function';
-  name: string;
-  description: string;
-  parameters: {
-    type: 'object';
-    properties: Record<string, { type: string; description: string }>;
-    required: string[];
-  };
+type ContentBlock = TextBlock | ThinkingBlock | ToolUse;
+
+interface Message {
+  role: 'user' | 'assistant';
+  content: string | ContentBlock[];
 }
 
 interface ToolCall {
   id: string;
-  call_id: string;
   name: string;
-  arguments: string;
+  input: Record<string, any>;
 }
 
 interface StreamEvent {
   type: string;
-  delta?: string;
-  item?: {
+  index?: number;
+  delta?: {
     type: string;
-    name?: string;
-    id?: string;
-    call_id?: string;
-    arguments?: string;
-    content?: {
-      type: string;
-      text?: string;
-    }[];
+    text?: string;
+    thinking?: string;
+    partial_json?: string;
   };
-  item_id?: string;
+  content_block?: {
+    type: string;
+    id?: string;
+    name?: string;
+  };
+  message?: {
+    stop_reason?: string;
+  };
+  usage?: {
+    output_tokens?: number;
+  };
 }
 
-const tools: Tool[] = [
-  {
-    type: 'function',
-    name: 'read_file',
-    description: 'Read the contents of a file',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'The file path to read' },
-      },
-      required: ['path'],
-    },
-  },
-  {
-    type: 'function',
-    name: 'write_file',
-    description: 'Write content to a file',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'The file path to write' },
-        content: { type: 'string', description: 'The content to write' },
-      },
-      required: ['path', 'content'],
-    },
-  },
-];
-
-function executeTool(name: string, args: Record<string, string>): string {
-  try {
-    switch (name) {
-      case 'read_file':
-        return fs.readFileSync(args.path, 'utf-8');
-      case 'write_file':
-        fs.mkdirSync(path.dirname(args.path), { recursive: true });
-        fs.writeFileSync(args.path, args.content);
-        return `Successfully wrote to ${args.path}`;
-      default:
-        return `Unknown tool: ${name}`;
-    }
-  } catch (error) {
-    return `Error: ${error instanceof Error ? error.message : String(error)}`;
-  }
-}
-
-class ChatSession {
-  private input: InputItem[] = [];
+export class ChatSession {
+  private messages: Message[] = [];
   private apiKey: string;
   private logDir: string;
   private turnCount: number = 0;
@@ -124,7 +111,7 @@ class ChatSession {
   }
 
   async sendMessage(input: string): Promise<void> {
-    this.input.push({ role: 'user', content: [{ type: 'input_text', text: input }] });
+    this.messages.push({ role: 'user', content: input });
     this.turnCount++;
     this.requestCount = 0;
 
@@ -134,17 +121,17 @@ class ChatSession {
     try {
       while (iteration < maxIterations) {
         iteration++;
-        const url = 'https://apihub.agnes-ai.com/v1/responses';
+        const url = `${BASE_URL}/messages`;
         const headers = {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
+          'x-api-key': this.apiKey,
         };
         const body: Record<string, any> = {
-          model: 'agnes-2.0-flash',
-          input: this.input,
-          tools: tools,
+          model: MODEL,
+          max_tokens: 4096,
           stream: true,
-          max_output_tokens: 4096,
+          tools: tools,
+          messages: this.messages,
         };
 
         this.requestCount++;
@@ -157,7 +144,12 @@ class ChatSession {
           request: { url, method: 'POST', headers, body },
         };
 
-        let result: { toolCalls: ToolCall[]; responseBody: any[] };
+        let result: {
+          toolCalls: ToolCall[];
+          textBlocks: string[];
+          responseBody: any[];
+          stopReason: string;
+        };
 
         try {
           const response = await fetch(url, {
@@ -171,13 +163,19 @@ class ChatSession {
             responseHeaders[key] = value;
           });
 
-          logEntry.response = { status: response.status, statusText: response.statusText, headers: responseHeaders };
+          logEntry.response = {
+            status: response.status,
+            statusText: response.statusText,
+            headers: responseHeaders,
+          };
 
           if (!response.ok) {
             const errorBody = await response.text();
             logEntry.response.body = errorBody;
             logEntry.error = `API request failed: ${response.status} ${response.statusText}`;
-            throw new Error(`API request failed: ${response.status} ${response.statusText}\n${errorBody}`);
+            throw new Error(
+              `API request failed: ${response.status} ${response.statusText}\n${errorBody}`,
+            );
           }
 
           result = await this.handleStream(response);
@@ -191,26 +189,44 @@ class ChatSession {
         }
 
         if (result.toolCalls.length > 0) {
+          const assistantContent: ContentBlock[] = [];
+
+          for (const textBlock of result.textBlocks) {
+            assistantContent.push({ type: 'text', text: textBlock });
+          }
+
           for (const toolCall of result.toolCalls) {
-            this.input.push({
-              type: 'function_call',
+            assistantContent.push({
+              type: 'tool_use',
               id: toolCall.id,
-              call_id: toolCall.call_id,
               name: toolCall.name,
-              arguments: toolCall.arguments,
-            });
-
-            process.stderr.write(`\x1b[2m[tool: ${toolCall.name}]\x1b[0m\n`);
-            const args = JSON.parse(toolCall.arguments);
-            const output = executeTool(toolCall.name, args);
-            process.stderr.write(`\x1b[2m${output}\x1b[0m\n\n`);
-
-            this.input.push({
-              type: 'function_call_output',
-              call_id: toolCall.call_id,
-              output,
+              input: toolCall.input,
             });
           }
+
+          this.messages.push({
+            role: 'assistant',
+            content: assistantContent,
+          });
+
+          const toolResults: ContentBlock[] = [];
+
+          for (const toolCall of result.toolCalls) {
+            process.stderr.write(`\x1b[2m[tool: ${toolCall.name}]\x1b[0m\n`);
+            const output = executeTool(toolCall.name, toolCall.input);
+            process.stderr.write(`\x1b[2m${output}\x1b[0m\n\n`);
+
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: toolCall.id,
+              content: output,
+            } as any);
+          }
+
+          this.messages.push({
+            role: 'user',
+            content: toolResults,
+          });
         } else {
           break;
         }
@@ -228,9 +244,12 @@ class ChatSession {
     }
   }
 
-  private async handleStream(
-    response: Response,
-  ): Promise<{ toolCalls: ToolCall[]; responseBody: any[] }> {
+  private async handleStream(response: Response): Promise<{
+    toolCalls: ToolCall[];
+    responseBody: any[];
+    textBlocks: string[];
+    stopReason: string;
+  }> {
     const reader = response.body?.getReader();
     if (!reader) {
       throw new Error('No response body');
@@ -238,11 +257,16 @@ class ChatSession {
 
     const decoder = new TextDecoder();
     let buffer = '';
-    let currentItemType = 'message';
-    let assistantResponse = '';
+    let currentBlockType = '';
+    let currentBlockId = '';
+    let currentBlockName = '';
+    let assistantText = '';
+    const textBlocks: string[] = [];
     const toolCalls: ToolCall[] = [];
     const pendingToolCalls: Map<string, ToolCall> = new Map();
+    const pendingToolJson: Map<string, string> = new Map();
     const responseBody: any[] = [];
+    let stopReason = '';
 
     while (true) {
       const { done, value } = await reader.read();
@@ -261,83 +285,100 @@ class ChatSession {
             const event: StreamEvent = JSON.parse(data);
             responseBody.push(event);
 
-            if (event.type === 'response.output_item.added' && event.item) {
-              currentItemType = event.item.type;
-              if (event.item.type === 'function_call') {
-                const name = event.item.name || '';
-                const itemId = (event.item as any).id || event.item_id || '';
-                const callId = event.item.call_id || itemId;
+            if (event.type === 'content_block_start' && event.content_block) {
+              currentBlockType = event.content_block.type;
+              currentBlockId = event.content_block.id || '';
+              currentBlockName = event.content_block.name || '';
+
+              if (currentBlockType === 'thinking') {
+                process.stderr.write('\x1b[2m[thinking]\x1b[0m ');
+              }
+
+              if (currentBlockType === 'tool_use') {
                 const toolCall: ToolCall = {
-                  id: itemId,
-                  call_id: callId,
-                  name,
-                  arguments: '',
+                  id: currentBlockId,
+                  name: currentBlockName,
+                  input: {},
                 };
-                pendingToolCalls.set(toolCall.id, toolCall);
+                pendingToolCalls.set(currentBlockId, toolCall);
+                pendingToolJson.set(currentBlockId, '');
               }
             }
 
-            if (
-              event.type === 'response.output_item.added' &&
-              event.item?.type === 'reasoning'
-            ) {
-              process.stderr.write('\x1b[2m[thinking]\x1b[0m ');
-            }
-
-            if (event.type === 'response.function_call_arguments.delta') {
-              const toolCallId = event.item_id || '';
-              const toolCall = pendingToolCalls.get(toolCallId);
-              if (toolCall) {
-                toolCall.arguments += event.delta || '';
+            if (event.type === 'content_block_delta' && event.delta) {
+              if (event.delta.type === 'thinking_delta' && event.delta.thinking) {
+                process.stderr.write('\x1b[2m' + event.delta.thinking + '\x1b[0m');
+              } else if (event.delta.type === 'text_delta' && event.delta.text) {
+                process.stdout.write(event.delta.text);
+                assistantText += event.delta.text;
+              } else if (event.delta.type === 'input_json_delta' && event.delta.partial_json) {
+                const toolCall = pendingToolCalls.get(currentBlockId);
+                if (toolCall) {
+                  const prevJson = pendingToolJson.get(currentBlockId) || '';
+                  const nextJson = prevJson + event.delta.partial_json;
+                  pendingToolJson.set(currentBlockId, nextJson);
+                  try {
+                    toolCall.input = JSON.parse(nextJson);
+                  } catch {}
+                }
               }
             }
 
-            if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') {
-              const itemId = event.item_id || (event.item as any).id || '';
-              const toolCall = pendingToolCalls.get(itemId);
-              if (toolCall && toolCall.name) {
-                toolCalls.push(toolCall);
-                pendingToolCalls.delete(itemId);
+            if (event.type === 'content_block_stop') {
+              if (currentBlockType === 'text' && assistantText) {
+                textBlocks.push(assistantText);
+                assistantText = '';
               }
+              if (currentBlockType === 'tool_use') {
+                const toolCall = pendingToolCalls.get(currentBlockId);
+                if (toolCall && toolCall.name) {
+                  toolCalls.push(toolCall);
+                  pendingToolCalls.delete(currentBlockId);
+                  pendingToolJson.delete(currentBlockId);
+                }
+              }
+              currentBlockType = '';
             }
 
-            if (event.delta) {
-              if (
-                currentItemType === 'reasoning' ||
-                event.type === 'response.reasoning_text.delta'
-              ) {
-                process.stderr.write('\x1b[2m' + event.delta + '\x1b[0m');
-              } else if (event.type === 'response.output_text.delta') {
-                process.stdout.write(event.delta);
-                assistantResponse += event.delta;
-              }
+            if (event.type === 'message_delta' && event.message?.stop_reason) {
+              stopReason = event.message.stop_reason;
             }
           } catch {}
         }
       }
     }
 
-    if (assistantResponse) {
-      process.stdout.write('\n');
-      this.input.push({ role: 'assistant', content: assistantResponse });
+    if (assistantText) {
+      textBlocks.push(assistantText);
     }
 
-    return { toolCalls, responseBody };
+    process.stdout.write('\n');
+
+    if (textBlocks.length > 0 && toolCalls.length === 0) {
+      this.messages.push({ role: 'assistant', content: textBlocks.join('') });
+    }
+
+    return { toolCalls, responseBody, textBlocks, stopReason };
   }
 
   private saveRequestLog(logEntry: any): void {
-    const filename = path.join(this.logDir, `turn-${this.turnCount}-request-${logEntry.requestIndex}.json`);
+    const filename = path.join(
+      this.logDir,
+      `turn-${this.turnCount}-request-${logEntry.requestIndex}.json`,
+    );
     fs.writeFileSync(filename, JSON.stringify(logEntry, null, 2));
   }
 
   private saveLog(error?: string): void {
-    process.stderr.write(`\x1b[2m[saveLog] turn=${this.turnCount} requests=${this.requestCount}\x1b[0m\n`);
+    process.stderr.write(
+      `\x1b[2m[saveLog] turn=${this.turnCount} requests=${this.requestCount}\x1b[0m\n`,
+    );
     const filename = path.join(this.logDir, `turn-${this.turnCount}.json`);
     const logData: any = {
       turn: this.turnCount,
       timestamp: new Date().toISOString(),
       requestCount: this.requestCount,
-      input: this.input,
+      messages: this.messages,
     };
     if (error) {
       logData.error = error;
@@ -346,33 +387,37 @@ class ChatSession {
   }
 }
 
-async function main() {
-  const apiKey = process.env.AGNES_APIKEY;
-  if (!apiKey) {
-    console.error('AGNES_APIKEY environment variable is not set');
+export async function main() {
+  if (!API_KEY) {
+    console.error('API_KEY is not configured (settings.json or .env)');
     process.exit(1);
   }
 
-  const session = new ChatSession(apiKey);
+  const session = new ChatSession(API_KEY);
 
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
+  });
+  let isClosed = false;
+  rl.on('close', () => {
+    isClosed = true;
   });
 
   console.log('Tool Calling Chat (type "exit" to quit)\n');
   console.log('Available tools: read_file, write_file\n');
 
   const prompt = (): void => {
+    if (isClosed) {
+      return;
+    }
+
     rl.question('You: ', async (input) => {
       const trimmed = input.trim();
-      if (
-        trimmed.toLowerCase() === 'exit' ||
-        trimmed.toLowerCase() === 'quit'
-      ) {
+      if (trimmed.toLowerCase() === 'exit' || trimmed.toLowerCase() === 'quit') {
         console.log('Bye!');
         rl.close();
-        process.exit(0);
+        return;
       }
 
       if (!trimmed) {
@@ -388,11 +433,19 @@ async function main() {
         console.error('Error:', error instanceof Error ? error.message : error);
       }
 
-      prompt();
+      if (!isClosed) {
+        prompt();
+      }
     });
   };
 
   prompt();
 }
 
-main();
+const isMain = process.argv[1]
+  ? fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
+  : false;
+
+if (isMain) {
+  main();
+}
